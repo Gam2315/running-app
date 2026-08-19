@@ -1,10 +1,12 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import Link from "next/link";
 import { db } from "@/lib/firebase";
+import { auth } from "@/lib/firebase";
 import { collection, getDocs, addDoc, setDoc, doc, deleteDoc, query } from "firebase/firestore";
+import { onAuthStateChanged, signOut, type User } from "firebase/auth";
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
 import type { Waypoint } from "@/components/AdminMap";
 import { formatDistance } from "@/lib/geo";
 
@@ -27,6 +29,9 @@ function getRouteName(km: number): string {
 }
 
 export default function AdminPage() {
+  const router = useRouter();
+  const [adminUser, setAdminUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [routes, setRoutes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -39,6 +44,24 @@ export default function AdminPage() {
   // Auto-generated values
   const distanceVariant = getDistanceVariant(routeDistance);
   const routeName = getRouteName(routeDistance);
+
+  const adminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL?.trim().toLowerCase();
+
+  useEffect(() => {
+    return onAuthStateChanged(auth, (user) => {
+      setAdminUser(user?.email?.toLowerCase() === adminEmail ? user : null);
+      setAuthReady(true);
+    });
+  }, [adminEmail]);
+
+  const handleAdminSignOut = async () => {
+    await signOut(auth);
+    router.replace("/");
+  };
+
+  useEffect(() => {
+    if (authReady && !adminUser) router.replace("/login");
+  }, [authReady, adminUser, router]);
 
   const fetchRoutes = async () => {
     setLoading(true);
@@ -105,17 +128,18 @@ export default function AdminPage() {
     }
   };
 
+  if (!authReady) {
+    return <div className="min-h-screen flex items-center justify-center text-zinc-400">Checking admin access...</div>;
+  }
+
+  if (!adminUser) return <div className="min-h-screen flex items-center justify-center text-zinc-400">Redirecting to sign in...</div>;
+
   return (
     <div className="min-h-screen p-6 lg:p-12 max-w-5xl mx-auto pb-32">
       <div className="flex justify-between items-center mb-12">
         <h1 className="text-4xl font-bold text-brand">Admin Panel</h1>
         <div className="flex items-center gap-4">
-          <Link href="/login" className="text-sm font-medium text-white hover:text-brand transition-colors bg-white/10 px-4 py-2 rounded-lg">
-            Login
-          </Link>
-          <Link href="/" className="text-zinc-400 hover:text-white transition-colors">
-            Back to App
-          </Link>
+          <button onClick={handleAdminSignOut} className="text-sm font-medium text-white hover:text-brand transition-colors bg-white/10 px-4 py-2 rounded-lg">Sign out</button>
         </div>
       </div>
 

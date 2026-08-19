@@ -16,6 +16,11 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 const googleProvider = new GoogleAuthProvider();
+googleProvider.addScope("email");
+googleProvider.addScope("profile");
+
 const facebookProvider = new FacebookAuthProvider();
+facebookProvider.addScope("email");
+facebookProvider.addScope("public_profile");
 
 export { app, auth, db, googleProvider, facebookProvider };

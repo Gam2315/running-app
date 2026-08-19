@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { signInWithPopup } from "firebase/auth";
+import { browserLocalPersistence, setPersistence, signInWithPopup } from "firebase/auth";
 import { auth, googleProvider, facebookProvider } from "@/lib/firebase";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -11,32 +11,54 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  const handleGoogleSignIn = async () => {
+  const getErrorMessage = (error: unknown): string => {
+    if (!error || typeof error !== "object" || !("code" in error)) {
+      return "Unable to sign in. Please try again.";
+    }
+
+    switch (error.code) {
+      case "auth/operation-not-allowed":
+        return "This sign-in method is not enabled in Firebase Authentication.";
+      case "auth/unauthorized-domain":
+        return "This website domain is not authorized in Firebase Authentication.";
+      case "auth/popup-blocked":
+        return "Your browser blocked the sign-in popup. Allow popups and try again.";
+      case "auth/popup-closed-by-user":
+        return "The sign-in window was closed before completing sign-in.";
+      case "auth/account-exists-with-different-credential":
+        return "An account already exists with a different sign-in method.";
+      case "auth/invalid-api-key":
+        return "Firebase has an invalid API key. Check the Vercel environment variables.";
+      default:
+        return "Sign-in failed. Check the Firebase provider settings and try again.";
+    }
+  };
+
+  const signIn = async (provider: typeof googleProvider | typeof facebookProvider) => {
     setError(null);
     setLoading(true);
     try {
-      await signInWithPopup(auth, googleProvider);
-      router.push("/");
-    } catch (err: any) {
-      setError(err.message);
-      console.error(err);
+      await setPersistence(auth, browserLocalPersistence);
+      const credential = await signInWithPopup(auth, provider);
+      const adminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL?.trim().toLowerCase() || "";
+      const signedInEmail = credential.user.email?.trim().toLowerCase() || "";
+      const destination = signedInEmail === adminEmail ? "/admin" : "/";
+      router.replace(destination);
+      router.refresh();
+    } catch (error: unknown) {
+      setError(getErrorMessage(error));
+      console.error("Sign-in failed:", error);
     } finally {
       setLoading(false);
     }
   };
 
+  const handleGoogleSignIn = async () => {
+    await signIn(googleProvider);
+  };
+
   const handleFacebookSignIn = async () => {
-    setError(null);
-    setLoading(true);
-    try {
-      await signInWithPopup(auth, facebookProvider);
-      router.push("/");
-    } catch (err: any) {
-      setError(err.message);
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
+    await signIn(facebookProvider);
   };
 
   return (
