@@ -192,7 +192,7 @@ function AdminMapInner({ waypoints, setWaypoints, detailedPath, setDetailedPath,
           {getRainbowSegments(detailedPath ?? []).map((segment, index) => <Polyline key={index} positions={segment.positions.map(([lat, lng]) => [lat, lng] as [number, number])} pathOptions={{ color: segment.color, weight: 7, opacity: 0.95 }} />)}
 
           {/* KM markers */}
-          {kmMarkers.map((km) => <Marker key={`km-${km.km}`} position={[km.lat, km.lng]} icon={L.divIcon({ className: "custom-leaflet-label", html: `<div>${km.km}KM</div>`, iconSize: [44, 24], iconAnchor: [22, 12] })} />)}
+          {kmMarkers.map((km) => <Marker key={`km-${km.km}`} position={[km.lat, km.lng]} icon={L.divIcon({ className: "custom-leaflet-label", html: markerHtml.km(km.km), iconSize: [50, 26], iconAnchor: [25, 13] })} />)}
 
           {/* Waypoint markers */}
           {waypoints.map((wp, index) => (
