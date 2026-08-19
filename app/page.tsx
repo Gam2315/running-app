@@ -240,7 +240,13 @@ export default function Home() {
   };
 
   const finishRun = () => {
-    if (isFinishing || resultSavedRef.current || runStartedAt === null) return;
+    if (runStartedAt === null) {
+      setRunArmed(false);
+      setIsRunning(false);
+      setGpsStatus("idle");
+      return;
+    }
+    if (isFinishing || resultSavedRef.current) return;
     resultSavedRef.current = true;
     const finalElapsedSeconds = runStartedAt === null ? elapsedSeconds : Math.floor((Date.now() - runStartedAt) / 1000);
     if (runStartedAt !== null) {
