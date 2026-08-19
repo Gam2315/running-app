@@ -10,6 +10,16 @@ import { useRouter } from "next/navigation";
 import type { Waypoint } from "@/components/AdminMap";
 import { formatDistance } from "@/lib/geo";
 
+type LeaderboardEntry = {
+  id: string;
+  distance: string;
+  displayName?: string;
+  actualDistanceKm?: number;
+  paceSecondsPerKm?: number;
+  timeSeconds?: number;
+  finishedAt?: { toDate?: () => Date; toMillis?: () => number } | number;
+};
+
 const AdminMap = dynamic(() => import("@/components/AdminMap"), { 
   ssr: false,
   loading: () => <div className="h-[520px] w-full bg-zinc-900 animate-pulse rounded-xl flex items-center justify-center text-zinc-500">Loading Map...</div>
@@ -36,6 +46,8 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState("");
+  const [leaderboardEntries, setLeaderboardEntries] = useState<LeaderboardEntry[]>([]);
+  const [leaderboardLoading, setLeaderboardLoading] = useState(true);
 
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
   const [detailedPath, setDetailedPath] = useState<{lat: number, lng: number}[]>([]);
@@ -84,6 +96,35 @@ export default function AdminPage() {
     fetchRoutes();
   }, []);
 
+  useEffect(() => {
+    if (!adminUser) return;
+
+    const fetchLeaderboard = async () => {
+      setLeaderboardLoading(true);
+      try {
+        const snapshot = await getDocs(collection(db, "leaderboards"));
+        const entries = snapshot.docs
+          .map((entry) => ({ id: entry.id, ...entry.data() }) as LeaderboardEntry)
+          .filter((entry) => typeof entry.distance === "string")
+          .sort((first, second) => {
+            const getTime = (entry: LeaderboardEntry) => {
+              if (typeof entry.finishedAt === "number") return entry.finishedAt;
+              return entry.finishedAt?.toMillis?.() ?? Number.MAX_SAFE_INTEGER;
+            };
+            return getTime(first) - getTime(second);
+          });
+        setLeaderboardEntries(entries);
+      } catch (error) {
+        console.error("Error fetching leaderboard:", error);
+        setLeaderboardEntries([]);
+      } finally {
+        setLeaderboardLoading(false);
+      }
+    };
+
+    fetchLeaderboard();
+  }, [adminUser]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (waypoints.length < 2) return;
@@ -126,6 +167,17 @@ export default function AdminPage() {
     } catch (e) {
       console.error("Error deleting document: ", e);
     }
+  };
+
+  const leaderboardCategories = Array.from(new Set([
+    ...routes.map((route) => route.distance),
+    ...leaderboardEntries.map((entry) => entry.distance),
+  ])).sort((first, second) => (parseFloat(first) || 0) - (parseFloat(second) || 0));
+
+  const formatLeaderboardTime = (seconds?: number) => {
+    if (typeof seconds !== "number") return "--:--";
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}:${String(Math.round(seconds % 60)).padStart(2, "0")}`;
   };
 
   if (!authReady) {
@@ -244,6 +296,55 @@ export default function AdminPage() {
             </div>
           )}
         </div>
+
+        <section>
+          <div className="mb-6 flex items-end justify-between gap-4">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-brand">Finish order</p>
+              <h2 className="mt-2 text-2xl font-semibold">Leaderboards by category</h2>
+            </div>
+            <span className="text-sm text-zinc-500">First across the line</span>
+          </div>
+
+          {leaderboardLoading ? (
+            <p className="text-zinc-500">Loading leaderboard...</p>
+          ) : leaderboardCategories.length === 0 ? (
+            <div className="rounded-2xl border border-border bg-card p-6 text-zinc-500">No finish records yet.</div>
+          ) : (
+            <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+              {leaderboardCategories.map((category) => {
+                const entries = leaderboardEntries.filter((entry) => entry.distance === category);
+                return (
+                  <div key={category} className="overflow-hidden rounded-2xl border border-border bg-card">
+                    <div className="flex items-center justify-between border-b border-border px-5 py-4">
+                      <h3 className="font-bold text-white">{category} category</h3>
+                      <span className="text-xs uppercase tracking-wider text-zinc-500">{entries.length} finishers</span>
+                    </div>
+                    {entries.length === 0 ? (
+                      <p className="p-5 text-sm text-zinc-600">No finish records yet.</p>
+                    ) : (
+                      <div className="divide-y divide-white/5">
+                        {entries.map((entry, index) => (
+                          <div key={entry.id} className="grid grid-cols-[2rem_1fr_auto] items-center gap-3 px-5 py-4">
+                            <span className={`text-lg font-bold ${index === 0 ? "text-brand" : "text-zinc-500"}`}>{index + 1}</span>
+                            <div>
+                              <p className="font-semibold text-white">{entry.displayName || "Runner"}</p>
+                              <p className="text-xs text-zinc-500">{entry.actualDistanceKm?.toFixed(2) || "0.00"} km recorded</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="font-bold text-brand">{formatLeaderboardTime(entry.timeSeconds)}</p>
+                              <p className="text-xs text-zinc-500">{formatLeaderboardTime(entry.paceSecondsPerKm)} / km</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
       </div>
     </div>
   );

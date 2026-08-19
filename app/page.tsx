@@ -1,12 +1,14 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import dynamic from "next/dynamic";
 import { onAuthStateChanged, signOut, type User } from "firebase/auth";
-import { collection, getDocs } from "firebase/firestore";
+import { addDoc, collection, getDocs, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 import type { Waypoint } from "@/components/AdminMap";
+import { formatDistance, haversineDistance } from "@/lib/geo";
 
 const UserMap = dynamic(() => import("@/components/UserMap"), { 
   ssr: false,
@@ -20,6 +22,8 @@ type LeaderboardEntry = {
   userName?: string;
   timeSeconds?: number;
   paceSecondsPerKm?: number;
+  finishedAt?: { toMillis?: () => number } | number;
+  actualDistanceKm?: number;
 };
 
 type RouteData = {
@@ -56,8 +60,16 @@ export default function Home() {
   const [leaderboardEntries, setLeaderboardEntries] = useState<LeaderboardEntry[]>([]);
   const [leaderboardLoading, setLeaderboardLoading] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
+  const [isFinishing, setIsFinishing] = useState(false);
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [trackedDistanceKm, setTrackedDistanceKm] = useState(0);
+  const [satelliteMode, setSatelliteMode] = useState(false);
+  const [userPosition, setUserPosition] = useState<{ lat: number; lng: number; accuracy: number } | null>(null);
+  const [gpsStatus, setGpsStatus] = useState<"idle" | "locating" | "ready" | "error">("idle");
+  const lastPositionRef = useRef<{ lat: number; lng: number } | null>(null);
+  const watchIdRef = useRef<number | null>(null);
+  const resultSavedRef = useRef(false);
 
   // Derive distances dynamically from Firestore routes, sorted numerically
   const distances = Array.from(new Set(routes.map((r) => r.distance)))
@@ -93,13 +105,12 @@ export default function Home() {
 
   const activeRoute = routes.find((r) => r.distance === activeDistance);
   const routeDistanceKm = Number(activeRoute?.calculatedDistanceKm) || parseFloat(activeDistance) || 0;
-  const currentPace = routeDistanceKm > 0 ? elapsedSeconds / routeDistanceKm : 0;
+  const currentPace = trackedDistanceKm > 0.03 ? elapsedSeconds / trackedDistanceKm : 0;
 
   useEffect(() => {
     return onAuthStateChanged(auth, (nextUser) => {
       setUser(nextUser);
       setAuthReady(true);
-      if (!nextUser) setLeaderboardEntries([]);
     });
   }, []);
 
@@ -112,8 +123,35 @@ export default function Home() {
   }, [isRunning, runStartedAt]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!isRunning || !navigator.geolocation) return;
 
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (position) => {
+        const nextPosition = { lat: position.coords.latitude, lng: position.coords.longitude };
+        if (position.coords.accuracy > 50) return;
+        setUserPosition({ ...nextPosition, accuracy: position.coords.accuracy });
+        const previousPosition = lastPositionRef.current;
+        if (previousPosition) {
+          const segmentKm = haversineDistance(previousPosition, nextPosition);
+          if (segmentKm > 0.001 && segmentKm < 0.2) setTrackedDistanceKm((distance) => distance + segmentKm);
+        }
+        lastPositionRef.current = nextPosition;
+        setGpsStatus("ready");
+
+        const finishPoint = activeRoute?.waypoints?.[activeRoute.waypoints.length - 1];
+        if (finishPoint && haversineDistance(nextPosition, finishPoint) <= 0.05) finishRun();
+      },
+      (error) => console.warn("Location tracking unavailable:", error.message),
+      { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
+    );
+
+    return () => {
+      if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    };
+  }, [isRunning, activeRoute]);
+
+  useEffect(() => {
     const fetchLeaderboard = async () => {
       setLeaderboardLoading(true);
       try {
@@ -122,9 +160,11 @@ export default function Home() {
           .map((entry) => ({ id: entry.id, ...entry.data() }) as LeaderboardEntry)
           .filter((entry) => typeof entry.distance === "string")
           .sort((first, second) => {
-            const firstPace = first.paceSecondsPerKm ?? Number.MAX_SAFE_INTEGER;
-            const secondPace = second.paceSecondsPerKm ?? Number.MAX_SAFE_INTEGER;
-            return firstPace - secondPace;
+            const getFinishTime = (entry: LeaderboardEntry) => {
+              if (typeof entry.finishedAt === "number") return entry.finishedAt;
+              return entry.finishedAt?.toMillis?.() ?? Number.MAX_SAFE_INTEGER;
+            };
+            return getFinishTime(first) - getFinishTime(second);
           });
         setLeaderboardEntries(entries);
       } catch (error) {
@@ -136,29 +176,132 @@ export default function Home() {
     };
 
     fetchLeaderboard();
-  }, [user]);
+  }, []);
 
   const startRun = () => {
     setElapsedSeconds(0);
+    setTrackedDistanceKm(0);
+    lastPositionRef.current = null;
+    setUserPosition(null);
+    setGpsStatus("locating");
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          if (position.coords.accuracy <= 50) {
+            setUserPosition({ lat: position.coords.latitude, lng: position.coords.longitude, accuracy: position.coords.accuracy });
+            setGpsStatus("ready");
+          }
+        },
+        () => setGpsStatus("error"),
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+      );
+    } else {
+      setGpsStatus("error");
+    }
+    resultSavedRef.current = false;
     setRunStartedAt(Date.now());
+    setIsFinishing(false);
     setIsRunning(true);
   };
 
-  const stopRun = () => {
+  const finishRun = () => {
+    if (isFinishing || resultSavedRef.current) return;
+    resultSavedRef.current = true;
+    const finalElapsedSeconds = runStartedAt === null ? elapsedSeconds : Math.floor((Date.now() - runStartedAt) / 1000);
     if (runStartedAt !== null) {
-      setElapsedSeconds(Math.floor((Date.now() - runStartedAt) / 1000));
+      setElapsedSeconds(finalElapsedSeconds);
+    }
+    if (user && activeRoute) {
+      const paceSecondsPerKm = trackedDistanceKm > 0.03 ? finalElapsedSeconds / trackedDistanceKm : 0;
+      addDoc(collection(db, "leaderboards"), {
+        distance: activeRoute.distance,
+        displayName: user.displayName || user.email?.split("@")[0] || "Runner",
+        userId: user.uid,
+        timeSeconds: finalElapsedSeconds,
+        paceSecondsPerKm,
+        actualDistanceKm: trackedDistanceKm,
+        finishedAt: serverTimestamp(),
+      }).catch((error) => console.error("Error saving finish result:", error));
     }
     setIsRunning(false);
+    setIsFinishing(true);
+    window.setTimeout(() => setIsFinishing(false), 900);
   };
+
+  if ((isRunning || isFinishing) && activeRoute?.waypoints && activeRoute.waypoints.length >= 2) {
+    return (
+      <div className="run-screen-enter fixed inset-0 z-[100] overflow-hidden bg-[#17262d] text-white">
+        <UserMap
+          waypoints={activeRoute.waypoints}
+          detailedPath={activeRoute.detailedPath}
+          routeDistance={activeRoute.calculatedDistanceKm}
+          runMode
+          satellite={satelliteMode}
+          userPosition={userPosition}
+        />
+
+        {gpsStatus !== "ready" && <div className="pointer-events-none absolute left-1/2 top-24 z-[2000] -translate-x-1/2 rounded-full bg-black/80 px-4 py-2 text-center text-xs font-semibold text-white shadow-lg">{gpsStatus === "error" ? "Allow location access to show your position" : "Locating you..."}</div>}
+
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-[2000] flex items-center justify-between bg-black/75 px-5 pb-5 pt-6 text-white drop-shadow-lg">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/60">ALCALA RUN</p>
+            <p className="mt-1 text-lg font-bold">{activeRoute.distance} route</p>
+          </div>
+          <button onClick={finishRun} disabled={isFinishing} className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full bg-black/70 text-xl text-white shadow-lg disabled:opacity-50" aria-label="Finish run">
+            ×
+          </button>
+        </div>
+
+        {isFinishing && (
+          <div className="run-complete-enter absolute inset-0 z-[2100] flex items-center justify-center bg-black/35 px-6 backdrop-blur-sm">
+            <div className="w-full max-w-sm rounded-[28px] border border-brand/30 bg-[#111214]/95 p-7 text-center shadow-2xl">
+              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-brand text-3xl font-bold text-black">✓</div>
+              <p className="mt-5 text-sm font-semibold uppercase tracking-[0.2em] text-brand">Run complete</p>
+              <p className="mt-2 text-5xl font-bold tabular-nums">{formatTime(elapsedSeconds)}</p>
+              <p className="mt-2 text-zinc-400">Final pace: <span className="font-semibold text-white">{formatPace(currentPace)} / km</span></p>
+            </div>
+          </div>
+        )}
+
+        <div className="pointer-events-none absolute inset-x-4 bottom-5 z-[2000] mx-auto max-w-lg space-y-3">
+          <div className={`${isFinishing ? "run-panel-exit" : "run-panel-enter"} rounded-[28px] border border-white/10 bg-[#111214]/95 px-5 py-5 shadow-2xl backdrop-blur-md`}>
+            <div className="mb-4 text-center">
+              <p className="text-sm font-semibold text-white/60">RUNNING</p>
+              <p className="mt-1 text-5xl font-bold tracking-tight tabular-nums">{formatTime(elapsedSeconds)}</p>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div>
+                <p className="text-2xl font-bold tabular-nums text-brand">{formatPace(currentPace)}</p>
+                <p className="mt-1 text-[11px] uppercase tracking-wider text-white/50">Pace / km</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold tabular-nums">{formatDistance(trackedDistanceKm)}</p>
+                <p className="mt-1 text-[11px] uppercase tracking-wider text-white/50">Distance</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold tabular-nums">{activeRoute.distance}</p>
+                <p className="mt-1 text-[11px] uppercase tracking-wider text-white/50">Category</p>
+              </div>
+            </div>
+          </div>
+
+          <div className={`${isFinishing ? "run-panel-exit" : "run-panel-enter"} pointer-events-auto rounded-[28px] border border-white/10 bg-[#111214]/95 px-5 py-5 shadow-2xl backdrop-blur-md`}>
+            <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-white/25" />
+            <button onClick={finishRun} disabled={isFinishing} className="flex w-full items-center justify-center gap-3 rounded-full bg-brand py-4 text-lg font-bold text-black shadow-[0_0_24px_rgba(203,249,70,0.25)] transition-transform active:scale-95 disabled:opacity-50">
+              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-black/15">■</span>
+              Finish Run
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col min-h-screen font-sans">
-      <header className="w-full p-6 md:px-12 flex justify-between items-center border-b border-border bg-black/50 backdrop-blur-md sticky top-0 z-10">
+      <header className="relative z-50 w-full p-6 md:px-12 flex justify-between items-center border-b border-border bg-black/95 backdrop-blur-md sticky top-0 isolate">
         <div className="flex items-center gap-2">
-          {/* Logo Placeholder */}
-          <div className="w-8 h-8 bg-brand rounded-md transform rotate-45 flex items-center justify-center overflow-hidden">
-            <div className="w-4 h-4 bg-black transform -rotate-45" />
-          </div>
+          <Image src="/alcalarun.png" alt="Alcala Run logo" width={42} height={42} className="h-10 w-10 object-contain" priority />
           <h1 className="text-2xl font-bold tracking-tighter text-white">ALCALA<span className="text-brand">RUN</span></h1>
         </div>
         <div className="flex items-center gap-4">
@@ -180,7 +323,7 @@ export default function Home() {
       </header>
 
       {authReady && !user && (
-        <div className="w-full bg-brand px-6 py-3 text-center text-sm font-semibold text-black">
+        <div className="sticky top-[81px] z-40 w-full bg-brand px-6 py-3 text-center text-sm font-semibold text-black">
           <Link href="/login" className="underline underline-offset-4">Log in</Link> to appear on the category leaderboards.
         </div>
       )}
@@ -189,10 +332,10 @@ export default function Home() {
         
         <div className="text-center mb-16 space-y-4">
           <h2 className="text-5xl md:text-7xl font-extrabold tracking-tight">
-            Find Your <br/><span className="text-transparent bg-clip-text bg-gradient-to-r from-brand to-[#7ab81d]">Perfect Pace</span>
+            HAPPY <br/><span className="text-transparent bg-clip-text bg-gradient-to-r from-brand to-[#7ab81d]">RUNNNIG ALCALEÑOS</span>
           </h2>
           <p className="text-lg text-zinc-400 max-w-xl mx-auto">
-            Choose your distance and we&apos;ll show you the meticulously planned route to crush your goals today.
+            Choose a distance, follow the route, and track your real-time pace as you run.
           </p>
         </div>
 
@@ -248,6 +391,8 @@ export default function Home() {
                        waypoints={activeRoute.waypoints} 
                        detailedPath={activeRoute.detailedPath}
                        routeDistance={activeRoute.calculatedDistanceKm} 
+                       satellite={satelliteMode}
+                       onSatelliteChange={setSatelliteMode}
                      />
                   )}
                 </div>
@@ -265,7 +410,7 @@ export default function Home() {
                   </div>
                 )}
 
-                <button onClick={isRunning ? stopRun : startRun} className={`w-full py-4 font-bold rounded-xl transition-colors flex items-center justify-center gap-2 ${isRunning ? "bg-red-500 text-white hover:bg-red-600" : "bg-white text-black hover:bg-zinc-200"}`}>
+                <button onClick={isRunning ? finishRun : startRun} className={`w-full py-4 font-bold rounded-xl transition-colors flex items-center justify-center gap-2 ${isRunning ? "bg-red-500 text-white hover:bg-red-600" : "bg-white text-black hover:bg-zinc-200"}`}>
                   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
                   {isRunning ? "FINISH RUN" : elapsedSeconds > 0 ? "START AGAIN" : "START RUN"}
                 </button>
@@ -296,19 +441,10 @@ export default function Home() {
               <p className="text-sm font-semibold uppercase tracking-[0.2em] text-brand">Race results</p>
               <h2 className="mt-2 text-3xl font-bold text-white">Category leaderboards</h2>
             </div>
-            {user && <span className="text-sm text-zinc-500">Top pace / km</span>}
+            <span className="text-sm text-zinc-500">Top finishers</span>
           </div>
 
-          {!authReady ? (
-            <p className="text-zinc-500">Checking your login...</p>
-          ) : !user ? (
-            <div className="rounded-2xl border border-brand/30 bg-brand/10 p-6 text-center">
-              <p className="text-lg font-semibold text-white">Log in to see the rankings</p>
-              <p className="mt-2 text-zinc-400">Compare your pace with runners in every distance category.</p>
-              <Link href="/login" className="mt-5 inline-flex rounded-xl bg-brand px-5 py-3 font-bold text-black hover:bg-[#b9e944]">Log in to view leaderboards</Link>
-            </div>
-          ) : (
-            <div className="overflow-hidden rounded-2xl border border-border bg-card">
+          <div className="overflow-hidden rounded-2xl border border-border bg-card">
               {leaderboardLoading ? (
                 <p className="p-6 text-zinc-500">Loading rankings...</p>
               ) : distances.length === 0 ? (
@@ -330,8 +466,7 @@ export default function Home() {
                   </div>
                 );
               })}
-            </div>
-          )}
+          </div>
         </section>
 
       </main>

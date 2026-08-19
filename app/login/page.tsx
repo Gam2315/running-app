@@ -5,6 +5,7 @@ import { browserLocalPersistence, setPersistence, signInWithPopup } from "fireba
 import { auth, googleProvider, facebookProvider } from "@/lib/firebase";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
 
 export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
@@ -69,9 +70,7 @@ export default function LoginPage() {
 
       <div className="w-full max-w-md bg-card p-8 rounded-3xl border border-border relative z-10 shadow-2xl">
         <div className="text-center mb-8">
-          <div className="w-12 h-12 bg-brand rounded-xl transform rotate-45 flex items-center justify-center mx-auto mb-6 overflow-hidden">
-            <div className="w-6 h-6 bg-black transform -rotate-45" />
-          </div>
+          <Image src="/alcalarun.png" alt="Alcala Run logo" width={80} height={80} className="mx-auto mb-6 h-20 w-20 object-contain" priority />
           <h1 className="text-3xl font-bold tracking-tighter text-white mb-2">Welcome to ALCALA<span className="text-brand">RUN</span></h1>
           <p className="text-zinc-400">Sign in to sync your running progress.</p>
         </div>

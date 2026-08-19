@@ -27,3 +27,39 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
 }
+
+@keyframes run-screen-enter {
+  from { opacity: 0; transform: scale(1.03); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes run-panel-enter {
+  from { opacity: 0; transform: translateY(100%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.run-screen-enter {
+  animation: run-screen-enter 420ms ease-out both;
+}
+
+.run-panel-enter {
+  animation: run-panel-enter 520ms cubic-bezier(0.2, 0.8, 0.2, 1) 120ms both;
+}
+
+@keyframes run-panel-exit {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(110%); }
+}
+
+@keyframes run-complete-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.run-panel-exit {
+  animation: run-panel-exit 520ms ease-in both;
+}
+
+.run-complete-enter {
+  animation: run-complete-enter 240ms ease-out both;
+}

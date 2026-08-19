@@ -1,12 +1,9 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import {
-  APIProvider,
-  Map,
-  AdvancedMarker,
-  useMap,
-} from "@vis.gl/react-google-maps";
+import L from "leaflet";
+import { MapContainer, Marker, Polyline, TileLayer, useMapEvents } from "react-leaflet";
+import "leaflet/dist/leaflet.css";
 import { formatDistance, getKmMarkers, getRainbowSegments } from "@/lib/geo";
 
 export type WaypointType = "regular" | "hydration" | "uturn";
@@ -18,72 +15,8 @@ export interface Waypoint {
 }
 
 // ── Rainbow polyline drawn imperatively ───────────────────────────────────────
-function MapPolylines({ detailedPath }: { detailedPath: { lat: number; lng: number }[] }) {
-  const map = useMap();
-  const linesRef = useRef<google.maps.Polyline[]>([]);
-
-  useEffect(() => {
-    if (!map) return;
-
-    // Clear old lines
-    linesRef.current.forEach((l) => l.setMap(null));
-    linesRef.current = [];
-
-    if (!detailedPath || detailedPath.length < 2) return;
-
-    const segments = getRainbowSegments(detailedPath);
-
-    // White glow
-    segments.forEach((seg) => {
-      linesRef.current.push(new google.maps.Polyline({
-        path: seg.positions.map(([lat, lng]) => ({ lat, lng })),
-        strokeColor: "#ffffff",
-        strokeWeight: 12,
-        strokeOpacity: 0.3,
-        map,
-        zIndex: 1,
-      }));
-    });
-
-    // Color segments
-    segments.forEach((seg) => {
-      linesRef.current.push(new google.maps.Polyline({
-        path: seg.positions.map(([lat, lng]) => ({ lat, lng })),
-        strokeColor: seg.color,
-        strokeWeight: 7,
-        strokeOpacity: 0.95,
-        map,
-        zIndex: 2,
-      }));
-    });
-
-    return () => {
-      linesRef.current.forEach((l) => l.setMap(null));
-      linesRef.current = [];
-    };
-  }, [map, detailedPath]);
-
-  return null;
-}
-
-// ── Click handler ─────────────────────────────────────────────────────────────
-function MapClickHandler({
-  onMapClick,
-}: {
-  onMapClick: (lat: number, lng: number) => void;
-}) {
-  const map = useMap();
-
-  useEffect(() => {
-    if (!map) return;
-    const listener = map.addListener("click", (e: google.maps.MapMouseEvent) => {
-      if (e.latLng) {
-        onMapClick(e.latLng.lat(), e.latLng.lng());
-      }
-    });
-    return () => google.maps.event.removeListener(listener);
-  }, [map, onMapClick]);
-
+function MapClickHandler({ onMapClick }: { onMapClick: (lat: number, lng: number) => void }) {
+  useMapEvents({ click: (event) => onMapClick(event.latlng.lat, event.latlng.lng) });
   return null;
 }
 
@@ -101,6 +34,14 @@ function mkDiv(html: string) {
   const d = document.createElement("div");
   d.innerHTML = html;
   return d.firstElementChild as HTMLElement;
+}
+
+function getMarkerHtml(wp: Waypoint, index: number, total: number): string {
+  if (wp.type === "hydration") return markerHtml.hydration;
+  if (wp.type === "uturn") return markerHtml.uturn;
+  if (index === 0) return markerHtml.start;
+  if (index === total - 1) return markerHtml.finish;
+  return markerHtml.regular(index);
 }
 
 // ── Main component ─────────────────────────────────────────────────────────────
@@ -152,6 +93,7 @@ function AdminMapInner({ waypoints, setWaypoints, detailedPath, setDetailedPath,
   const [activeType, setActiveType] = useState<WaypointType>("regular");
   const [infoIndex, setInfoIndex] = useState<number | null>(null);
   const [isRouting, setIsRouting] = useState(false);
+  const [satellite, setSatellite] = useState(false);
 
   // Fetch road-snapped route from OSRM whenever waypoints change
   useEffect(() => {
@@ -183,10 +125,9 @@ function AdminMapInner({ waypoints, setWaypoints, detailedPath, setDetailedPath,
     [waypoints, setWaypoints, activeType]
   );
 
-  const handleDragEnd = (index: number, e: google.maps.MapMouseEvent) => {
-    if (!e.latLng) return;
+  const handleDragEnd = (index: number, lat: number, lng: number) => {
     const updated = [...waypoints];
-    updated[index] = { ...updated[index], lat: e.latLng.lat(), lng: e.latLng.lng() };
+    updated[index] = { ...updated[index], lat, lng };
     setWaypoints(updated);
   };
 
@@ -241,34 +182,26 @@ function AdminMapInner({ waypoints, setWaypoints, detailedPath, setDetailedPath,
       </p>
 
       {/* Map */}
-      <div className="h-[540px] w-full rounded-xl overflow-hidden border border-border shadow-xl">
-        <Map
-          mapId={process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID || "DEMO_MAP_ID"}
-          defaultCenter={{ lat: 14.5995, lng: 120.9842 }}
-          defaultZoom={14}
-          mapTypeId="hybrid"
-          disableDefaultUI={false}
-          gestureHandling="greedy"
-          style={{ width: "100%", height: "100%" }}
-        >
+      <div className="relative h-[540px] w-full overflow-hidden rounded-xl border border-border shadow-xl">
+        <button type="button" onClick={() => setSatellite((value) => !value)} className="absolute right-3 top-3 z-[1000] rounded-lg bg-black/85 px-3 py-2 text-xs font-bold text-white shadow-lg">
+          {satellite ? "Street view" : "Satellite"}
+        </button>
+        <MapContainer center={[14.5995, 120.9842]} zoom={14} className="h-full w-full">
+          {satellite ? <TileLayer attribution='&copy; Esri' url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" /> : <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />}
           <MapClickHandler onMapClick={handleMapClick} />
-          <MapPolylines detailedPath={detailedPath ?? []} />
+          {getRainbowSegments(detailedPath ?? []).map((segment, index) => <Polyline key={index} positions={segment.positions.map(([lat, lng]) => [lat, lng] as [number, number])} pathOptions={{ color: segment.color, weight: 7, opacity: 0.95 }} />)}
 
           {/* KM markers */}
-          {kmMarkers.map((km) => (
-            <AdvancedMarker key={`km-${km.km}`} position={{ lat: km.lat, lng: km.lng }}>
-              <div dangerouslySetInnerHTML={{ __html: markerHtml.km(km.km) }} />
-            </AdvancedMarker>
-          ))}
+          {kmMarkers.map((km) => <Marker key={`km-${km.km}`} position={[km.lat, km.lng]} icon={L.divIcon({ className: "custom-leaflet-label", html: `<div>${km.km}KM</div>`, iconSize: [44, 24], iconAnchor: [22, 12] })} />)}
 
           {/* Waypoint markers */}
           {waypoints.map((wp, index) => (
-            <AdvancedMarker
+            <Marker
               key={index}
               position={{ lat: wp.lat, lng: wp.lng }}
               draggable={true}
-              onDragEnd={(e) => handleDragEnd(index, e)}
-              onClick={() => setInfoIndex(infoIndex === index ? null : index)}
+              eventHandlers={{ dragend: (event) => { const position = event.target.getLatLng(); handleDragEnd(index, position.lat, position.lng); }, click: () => setInfoIndex(infoIndex === index ? null : index) }}
+              icon={L.divIcon({ className: "custom-leaflet-marker", html: getMarkerHtml(wp, index, waypoints.length), iconSize: [40, 40], iconAnchor: [20, 20] })}
             >
               <div>
                 {wp.type === "hydration" && <div dangerouslySetInnerHTML={{ __html: markerHtml.hydration }} />}
@@ -291,9 +224,9 @@ function AdminMapInner({ waypoints, setWaypoints, detailedPath, setDetailedPath,
                   </div>
                 )}
               </div>
-            </AdvancedMarker>
+            </Marker>
           ))}
-        </Map>
+        </MapContainer>
       </div>
 
       {/* Waypoint list */}
@@ -331,16 +264,12 @@ function AdminMapInner({ waypoints, setWaypoints, detailedPath, setDetailedPath,
 
 // ── Exported wrapper with APIProvider ─────────────────────────────────────────
 export default function AdminMap({ waypoints, setWaypoints, detailedPath, setDetailedPath, routeDistance, setRouteDistance }: AdminMapProps) {
-  return (
-    <APIProvider apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || ""}>
-      <AdminMapInner 
+  return <AdminMapInner 
         waypoints={waypoints} 
         setWaypoints={setWaypoints}
         detailedPath={detailedPath}
         setDetailedPath={setDetailedPath}
         routeDistance={routeDistance}
         setRouteDistance={setRouteDistance}
-      />
-    </APIProvider>
-  );
+      />;
 }
