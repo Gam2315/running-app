@@ -36,6 +36,13 @@ type RouteData = {
   detailedPath?: { lat: number; lng: number }[];
 };
 
+const ROUTES_CACHE_KEY = "alcalarun:routes:v1";
+
+type RoutesCache = {
+  savedAt: number;
+  routes: RouteData[];
+};
+
 function formatTime(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -60,6 +67,7 @@ export default function Home() {
   const [leaderboardEntries, setLeaderboardEntries] = useState<LeaderboardEntry[]>([]);
   const [leaderboardLoading, setLeaderboardLoading] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
+  const [runArmed, setRunArmed] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -84,7 +92,22 @@ export default function Home() {
 
   useEffect(() => {
     const fetchRoutes = async () => {
-      setLoading(true);
+      let cachedRoutes: RouteData[] | null = null;
+      try {
+        const cached = window.localStorage.getItem(ROUTES_CACHE_KEY);
+        if (cached) {
+          const parsed = JSON.parse(cached) as RoutesCache;
+          if (Array.isArray(parsed.routes)) {
+            cachedRoutes = parsed.routes;
+            setRoutes(parsed.routes);
+            setLoading(false);
+          }
+        }
+      } catch (error) {
+        console.warn("Unable to read cached routes:", error);
+      }
+
+      if (!cachedRoutes) setLoading(true);
       try {
         const { collection, getDocs } = await import("firebase/firestore");
         const { db } = await import("@/lib/firebase");
@@ -94,6 +117,7 @@ export default function Home() {
           data.push({ id: doc.id, ...(doc.data() as Omit<RouteData, "id">) });
         });
         setRoutes(data);
+        window.localStorage.setItem(ROUTES_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), routes: data } satisfies RoutesCache));
       } catch (e) {
         console.error("Error fetching routes from Firestore:", e);
       } finally {
@@ -123,23 +147,33 @@ export default function Home() {
   }, [isRunning, runStartedAt]);
 
   useEffect(() => {
-    if (!isRunning || !navigator.geolocation) return;
+    if (!runArmed || !navigator.geolocation) return;
 
     watchIdRef.current = navigator.geolocation.watchPosition(
       (position) => {
         const nextPosition = { lat: position.coords.latitude, lng: position.coords.longitude };
-        if (position.coords.accuracy > 50) return;
+        if (position.coords.accuracy > 15) return;
         setUserPosition({ ...nextPosition, accuracy: position.coords.accuracy });
+        const startPoint = activeRoute?.waypoints?.[0];
+        const finishPoint = activeRoute?.waypoints?.[activeRoute.waypoints.length - 1];
+        if (!startPoint) return;
+
+        const distanceFromStart = haversineDistance(nextPosition, startPoint);
+        if (!isRunning && distanceFromStart <= 0.015) {
+          setRunStartedAt(Date.now());
+          setIsRunning(true);
+          setGpsStatus("ready");
+        }
+
         const previousPosition = lastPositionRef.current;
         if (previousPosition) {
           const segmentKm = haversineDistance(previousPosition, nextPosition);
-          if (segmentKm > 0.001 && segmentKm < 0.2) setTrackedDistanceKm((distance) => distance + segmentKm);
+          if (isRunning && segmentKm > 0.001 && segmentKm < 0.2) setTrackedDistanceKm((distance) => distance + segmentKm);
         }
         lastPositionRef.current = nextPosition;
         setGpsStatus("ready");
 
-        const finishPoint = activeRoute?.waypoints?.[activeRoute.waypoints.length - 1];
-        if (finishPoint && haversineDistance(nextPosition, finishPoint) <= 0.05) finishRun();
+        if (isRunning && finishPoint && haversineDistance(nextPosition, finishPoint) <= 0.015) finishRun();
       },
       (error) => console.warn("Location tracking unavailable:", error.message),
       { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
@@ -149,7 +183,7 @@ export default function Home() {
       if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
     };
-  }, [isRunning, activeRoute]);
+  }, [runArmed, isRunning, activeRoute]);
 
   useEffect(() => {
     const fetchLeaderboard = async () => {
@@ -187,7 +221,7 @@ export default function Home() {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
-          if (position.coords.accuracy <= 50) {
+          if (position.coords.accuracy <= 15) {
             setUserPosition({ lat: position.coords.latitude, lng: position.coords.longitude, accuracy: position.coords.accuracy });
             setGpsStatus("ready");
           }
@@ -199,13 +233,14 @@ export default function Home() {
       setGpsStatus("error");
     }
     resultSavedRef.current = false;
-    setRunStartedAt(Date.now());
+    setRunStartedAt(null);
     setIsFinishing(false);
-    setIsRunning(true);
+    setIsRunning(false);
+    setRunArmed(true);
   };
 
   const finishRun = () => {
-    if (isFinishing || resultSavedRef.current) return;
+    if (isFinishing || resultSavedRef.current || runStartedAt === null) return;
     resultSavedRef.current = true;
     const finalElapsedSeconds = runStartedAt === null ? elapsedSeconds : Math.floor((Date.now() - runStartedAt) / 1000);
     if (runStartedAt !== null) {
@@ -224,11 +259,12 @@ export default function Home() {
       }).catch((error) => console.error("Error saving finish result:", error));
     }
     setIsRunning(false);
+    setRunArmed(false);
     setIsFinishing(true);
     window.setTimeout(() => setIsFinishing(false), 900);
   };
 
-  if ((isRunning || isFinishing) && activeRoute?.waypoints && activeRoute.waypoints.length >= 2) {
+  if ((runArmed || isRunning || isFinishing) && activeRoute?.waypoints && activeRoute.waypoints.length >= 2) {
     return (
       <div className="run-screen-enter fixed inset-0 z-[100] overflow-hidden bg-[#17262d] text-white">
         <UserMap
@@ -266,7 +302,7 @@ export default function Home() {
         <div className="pointer-events-none absolute inset-x-4 bottom-5 z-[2000] mx-auto max-w-lg space-y-3">
           <div className={`${isFinishing ? "run-panel-exit" : "run-panel-enter"} rounded-[28px] border border-white/10 bg-[#111214]/95 px-5 py-5 shadow-2xl backdrop-blur-md`}>
             <div className="mb-4 text-center">
-              <p className="text-sm font-semibold text-white/60">RUNNING</p>
+              <p className="text-sm font-semibold text-white/60">{isRunning ? "RUNNING" : "WAITING AT START LINE"}</p>
               <p className="mt-1 text-5xl font-bold tracking-tight tabular-nums">{formatTime(elapsedSeconds)}</p>
             </div>
             <div className="grid grid-cols-3 gap-2 text-center">
@@ -289,7 +325,7 @@ export default function Home() {
             <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-white/25" />
             <button onClick={finishRun} disabled={isFinishing} className="flex w-full items-center justify-center gap-3 rounded-full bg-brand py-4 text-lg font-bold text-black shadow-[0_0_24px_rgba(203,249,70,0.25)] transition-transform active:scale-95 disabled:opacity-50">
               <span className="flex h-8 w-8 items-center justify-center rounded-full bg-black/15">■</span>
-              Finish Run
+              {isRunning ? "Finish Run" : "Waiting for start line"}
             </button>
           </div>
         </div>
