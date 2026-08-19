@@ -97,14 +97,15 @@ function AdminMapInner({ waypoints, setWaypoints, detailedPath, setDetailedPath,
 
   // Fetch road-snapped route from OSRM whenever waypoints change
   useEffect(() => {
-    if (waypoints.length < 2) {
+    const routingWaypoints = waypoints.filter((waypoint) => waypoint.type !== "hydration");
+    if (routingWaypoints.length < 2) {
       setDetailedPath([]);
       setRouteDistance(0);
       return;
     }
     let cancelled = false;
     setIsRouting(true);
-    fetchOsrmRoute(waypoints).then(result => {
+    fetchOsrmRoute(routingWaypoints).then(result => {
       if (cancelled) return;
       if (result) {
         setDetailedPath(result.path);
