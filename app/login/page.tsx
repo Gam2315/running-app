@@ -112,6 +112,9 @@ export default function LoginPage() {
           <Link href="/" className="text-sm text-zinc-500 hover:text-white transition-colors">
             Back to Home
           </Link>
+          <p className="mt-4 text-xs leading-5 text-zinc-600">
+            By continuing, you agree to our <Link href="/terms" className="text-zinc-400 underline underline-offset-2 hover:text-white">Terms of Service</Link> and acknowledge our <Link href="/privacy" className="text-zinc-400 underline underline-offset-2 hover:text-white">Privacy Policy</Link>.
+          </p>
         </div>
       </div>
     </div>

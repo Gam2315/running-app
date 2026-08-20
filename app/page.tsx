@@ -529,6 +529,13 @@ export default function Home() {
 
       </main>
 
+      <footer className="border-t border-border px-6 py-8 text-center text-sm text-zinc-500">
+        <div className="flex justify-center gap-5">
+          <Link href="/terms" className="transition-colors hover:text-white">Terms of Service</Link>
+          <Link href="/privacy" className="transition-colors hover:text-white">Privacy Policy</Link>
+        </div>
+      </footer>
+
       {showGuestNameModal && (
         <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/75 px-6 backdrop-blur-sm">
           <form
