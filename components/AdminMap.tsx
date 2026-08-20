@@ -36,12 +36,12 @@ function mkDiv(html: string) {
   return d.firstElementChild as HTMLElement;
 }
 
-function getMarkerHtml(wp: Waypoint, index: number, total: number): string {
+function getMarkerHtml(wp: Waypoint, routeIndex: number, routeTotal: number): string {
   if (wp.type === "hydration") return markerHtml.hydration;
   if (wp.type === "uturn") return markerHtml.uturn;
-  if (index === 0) return markerHtml.start;
-  if (index === total - 1) return markerHtml.finish;
-  return markerHtml.regular(index);
+  if (routeIndex === 0) return markerHtml.start;
+  if (routeIndex === routeTotal - 1) return markerHtml.finish;
+  return markerHtml.regular(routeIndex);
 }
 
 // ── Main component ─────────────────────────────────────────────────────────────
@@ -117,6 +117,7 @@ function AdminMapInner({ waypoints, setWaypoints, detailedPath, setDetailedPath,
   }, [waypoints, setDetailedPath, setRouteDistance]);
 
   const kmMarkers = getKmMarkers(detailedPath ?? []);
+  const routeWaypoints = waypoints.filter((waypoint) => waypoint.type !== "hydration");
 
   const handleMapClick = useCallback(
     (lat: number, lng: number) => {
@@ -197,25 +198,30 @@ function AdminMapInner({ waypoints, setWaypoints, detailedPath, setDetailedPath,
 
           {/* Waypoint markers */}
           {waypoints.map((wp, index) => (
+            (() => {
+              const routeIndex = wp.type === "hydration" ? -1 : routeWaypoints.indexOf(wp);
+              const isStart = routeIndex === 0;
+              const isFinish = routeIndex > 0 && routeIndex === routeWaypoints.length - 1;
+              return (
             <Marker
               key={index}
               position={{ lat: wp.lat, lng: wp.lng }}
               draggable={true}
               eventHandlers={{ dragend: (event) => { const position = event.target.getLatLng(); handleDragEnd(index, position.lat, position.lng); }, click: () => setInfoIndex(infoIndex === index ? null : index) }}
-              icon={L.divIcon({ className: "custom-leaflet-marker", html: getMarkerHtml(wp, index, waypoints.length), iconSize: [40, 40], iconAnchor: [20, 20] })}
+              icon={L.divIcon({ className: "custom-leaflet-marker", html: getMarkerHtml(wp, routeIndex, routeWaypoints.length), iconSize: [40, 40], iconAnchor: [20, 20] })}
             >
               <div>
                 {wp.type === "hydration" && <div dangerouslySetInnerHTML={{ __html: markerHtml.hydration }} />}
                 {wp.type === "uturn" && <div dangerouslySetInnerHTML={{ __html: markerHtml.uturn }} />}
-                {wp.type === "regular" && index === 0 && <div dangerouslySetInnerHTML={{ __html: markerHtml.start }} />}
-                {wp.type === "regular" && index === waypoints.length - 1 && index !== 0 && <div dangerouslySetInnerHTML={{ __html: markerHtml.finish }} />}
-                {wp.type === "regular" && index !== 0 && index !== waypoints.length - 1 && <div dangerouslySetInnerHTML={{ __html: markerHtml.regular(index) }} />}
+                {wp.type === "regular" && isStart && <div dangerouslySetInnerHTML={{ __html: markerHtml.start }} />}
+                {wp.type === "regular" && isFinish && <div dangerouslySetInnerHTML={{ __html: markerHtml.finish }} />}
+                {wp.type === "regular" && !isStart && !isFinish && <div dangerouslySetInnerHTML={{ __html: markerHtml.regular(routeIndex) }} />}
 
                 {/* Info popup */}
                 {infoIndex === index && (
                   <div style={{ position: "absolute", bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)", background: "#1a1a1a", border: "1px solid #333", borderRadius: 10, padding: "10px 14px", minWidth: 150, textAlign: "center", boxShadow: "0 4px 20px rgba(0,0,0,0.7)", zIndex: 999 }}>
                     <p style={{ color: "white", fontWeight: "bold", margin: "0 0 4px", fontSize: 13 }}>
-                      {index === 0 ? "🟢 Starting Line" : index === waypoints.length - 1 ? "🏁 Finish" : wp.type === "hydration" ? "💧 Hydration" : wp.type === "uturn" ? "↩ U-Turn" : `📍 Point ${index}`}
+                      {isStart ? "🟢 Starting Line" : isFinish ? "🏁 Finish" : wp.type === "hydration" ? "💧 Hydration" : wp.type === "uturn" ? "↩ U-Turn" : `📍 Point ${routeIndex}`}
                     </p>
                     <p style={{ color: "#888", fontSize: 11, margin: "0 0 8px" }}>{wp.lat.toFixed(5)}, {wp.lng.toFixed(5)}</p>
                     <button onClick={(e) => { e.stopPropagation(); handleDelete(index); }}
@@ -226,6 +232,8 @@ function AdminMapInner({ waypoints, setWaypoints, detailedPath, setDetailedPath,
                 )}
               </div>
             </Marker>
+              );
+            })()
           ))}
         </MapContainer>
       </div>
@@ -236,8 +244,9 @@ function AdminMapInner({ waypoints, setWaypoints, detailedPath, setDetailedPath,
           <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">Route Points</h4>
           <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto pr-1">
             {waypoints.map((wp, index) => {
-              const isStart = index === 0;
-              const isEnd = index === waypoints.length - 1;
+              const routeIndex = wp.type === "hydration" ? -1 : routeWaypoints.indexOf(wp);
+              const isStart = routeIndex === 0;
+              const isEnd = routeIndex > 0 && routeIndex === routeWaypoints.length - 1;
               const cfg = typeConfig[wp.type];
               return (
                 <div key={index} className="flex items-center gap-3 text-xs p-2 rounded-lg bg-white/5 hover:bg-white/10 group transition-colors">

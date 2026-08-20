@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useEffectEvent } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import dynamic from "next/dynamic";
@@ -68,6 +68,8 @@ export default function Home() {
   const [leaderboardLoading, setLeaderboardLoading] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [runArmed, setRunArmed] = useState(false);
+  const [guestName, setGuestName] = useState("");
+  const [showGuestNameModal, setShowGuestNameModal] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -128,8 +130,8 @@ export default function Home() {
   }, []);
 
   const activeRoute = routes.find((r) => r.distance === activeDistance);
-  const routeDistanceKm = Number(activeRoute?.calculatedDistanceKm) || parseFloat(activeDistance) || 0;
   const currentPace = trackedDistanceKm > 0.03 ? elapsedSeconds / trackedDistanceKm : 0;
+  const runnerName = (user?.displayName?.trim() || user?.email?.split("@")[0] || guestName.trim() || "ALCALEÑOS").split(/\s+/)[0];
 
   useEffect(() => {
     return onAuthStateChanged(auth, (nextUser) => {
@@ -145,45 +147,6 @@ export default function Home() {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [isRunning, runStartedAt]);
-
-  useEffect(() => {
-    if (!runArmed || !navigator.geolocation) return;
-
-    watchIdRef.current = navigator.geolocation.watchPosition(
-      (position) => {
-        const nextPosition = { lat: position.coords.latitude, lng: position.coords.longitude };
-        if (position.coords.accuracy > 15) return;
-        setUserPosition({ ...nextPosition, accuracy: position.coords.accuracy });
-        const startPoint = activeRoute?.waypoints?.[0];
-        const finishPoint = activeRoute?.waypoints?.[activeRoute.waypoints.length - 1];
-        if (!startPoint) return;
-
-        const distanceFromStart = haversineDistance(nextPosition, startPoint);
-        if (!isRunning && distanceFromStart <= 0.015) {
-          setRunStartedAt(Date.now());
-          setIsRunning(true);
-          setGpsStatus("ready");
-        }
-
-        const previousPosition = lastPositionRef.current;
-        if (previousPosition) {
-          const segmentKm = haversineDistance(previousPosition, nextPosition);
-          if (isRunning && segmentKm > 0.001 && segmentKm < 0.2) setTrackedDistanceKm((distance) => distance + segmentKm);
-        }
-        lastPositionRef.current = nextPosition;
-        setGpsStatus("ready");
-
-        if (isRunning && finishPoint && haversineDistance(nextPosition, finishPoint) <= 0.015) finishRun();
-      },
-      (error) => console.warn("Location tracking unavailable:", error.message),
-      { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
-    );
-
-    return () => {
-      if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current = null;
-    };
-  }, [runArmed, isRunning, activeRoute]);
 
   useEffect(() => {
     const fetchLeaderboard = async () => {
@@ -212,7 +175,9 @@ export default function Home() {
     fetchLeaderboard();
   }, []);
 
-  const startRun = () => {
+  const startRun = (name?: string) => {
+    if (!user && !name) return;
+    if (name) setGuestName(name);
     setElapsedSeconds(0);
     setTrackedDistanceKm(0);
     lastPositionRef.current = null;
@@ -239,6 +204,15 @@ export default function Home() {
     setRunArmed(true);
   };
 
+  const handleStartRun = () => {
+    if (user) {
+      startRun();
+      return;
+    }
+    setGuestName("");
+    setShowGuestNameModal(true);
+  };
+
   const finishRun = () => {
     if (runStartedAt === null) {
       setRunArmed(false);
@@ -252,27 +226,68 @@ export default function Home() {
     if (runStartedAt !== null) {
       setElapsedSeconds(finalElapsedSeconds);
     }
-    if (user && activeRoute) {
+    if (activeRoute) {
       const paceSecondsPerKm = trackedDistanceKm > 0.03 ? finalElapsedSeconds / trackedDistanceKm : 0;
-      addDoc(collection(db, "leaderboards"), {
+      const leaderboardEntry = {
         distance: activeRoute.distance,
-        displayName: user.displayName || user.email?.split("@")[0] || "Runner",
-        userId: user.uid,
+        displayName: user?.displayName || user?.email?.split("@")[0] || guestName || "Runner",
         timeSeconds: finalElapsedSeconds,
         paceSecondsPerKm,
         actualDistanceKm: trackedDistanceKm,
         finishedAt: serverTimestamp(),
-      }).catch((error) => console.error("Error saving finish result:", error));
+        ...(user ? { userId: user.uid } : {}),
+      };
+      addDoc(collection(db, "leaderboards"), leaderboardEntry).catch((error) => console.error("Error saving finish result:", error));
     }
     setIsRunning(false);
     setRunArmed(false);
     setIsFinishing(true);
     window.setTimeout(() => setIsFinishing(false), 900);
   };
+  const finishRunEvent = useEffectEvent(finishRun);
+
+  useEffect(() => {
+    if (!runArmed || !navigator.geolocation) return;
+
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (position) => {
+        const nextPosition = { lat: position.coords.latitude, lng: position.coords.longitude };
+        if (position.coords.accuracy > 15) return;
+        setUserPosition({ ...nextPosition, accuracy: position.coords.accuracy });
+        const startPoint = activeRoute?.waypoints?.[0];
+        const finishPoint = activeRoute?.waypoints?.[activeRoute.waypoints.length - 1];
+        if (!startPoint) return;
+
+        const distanceFromStart = haversineDistance(nextPosition, startPoint);
+        if (!isRunning && distanceFromStart <= 0.015) {
+          setRunStartedAt(Date.now());
+          setIsRunning(true);
+          setGpsStatus("ready");
+        }
+
+        const previousPosition = lastPositionRef.current;
+        if (previousPosition) {
+          const segmentKm = haversineDistance(previousPosition, nextPosition);
+          if (isRunning && segmentKm > 0.001 && segmentKm < 0.2) setTrackedDistanceKm((distance) => distance + segmentKm);
+        }
+        lastPositionRef.current = nextPosition;
+        setGpsStatus("ready");
+
+        if (isRunning && finishPoint && haversineDistance(nextPosition, finishPoint) <= 0.015) finishRunEvent();
+      },
+      (error) => console.warn("Location tracking unavailable:", error.message),
+      { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
+    );
+
+    return () => {
+      if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    };
+  }, [runArmed, isRunning, activeRoute]);
 
   if ((runArmed || isRunning || isFinishing) && activeRoute?.waypoints && activeRoute.waypoints.length >= 2) {
     return (
-      <div className="run-screen-enter fixed inset-0 z-[100] overflow-hidden bg-[#17262d] text-white">
+      <div className="run-screen-enter fixed inset-0 z-100 overflow-hidden bg-[#17262d] text-white">
         <UserMap
           waypoints={activeRoute.waypoints}
           detailedPath={activeRoute.detailedPath}
@@ -282,9 +297,9 @@ export default function Home() {
           userPosition={userPosition}
         />
 
-        {gpsStatus !== "ready" && <div className="pointer-events-none absolute left-1/2 top-24 z-[2000] -translate-x-1/2 rounded-full bg-black/80 px-4 py-2 text-center text-xs font-semibold text-white shadow-lg">{gpsStatus === "error" ? "Allow location access to show your position" : "Locating you..."}</div>}
+        {gpsStatus !== "ready" && <div className="pointer-events-none absolute left-1/2 top-24 z-2000 -translate-x-1/2 rounded-full bg-black/80 px-4 py-2 text-center text-xs font-semibold text-white shadow-lg">{gpsStatus === "error" ? "Allow location access to show your position" : "Locating you..."}</div>}
 
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-[2000] flex items-center justify-between bg-black/75 px-5 pb-5 pt-6 text-white drop-shadow-lg">
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-2000 flex items-center justify-between bg-black/75 px-5 pb-5 pt-6 text-white drop-shadow-lg">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/60">ALCALA RUN</p>
             <p className="mt-1 text-lg font-bold">{activeRoute.distance} route</p>
@@ -295,7 +310,7 @@ export default function Home() {
         </div>
 
         {isFinishing && (
-          <div className="run-complete-enter absolute inset-0 z-[2100] flex items-center justify-center bg-black/35 px-6 backdrop-blur-sm">
+          <div className="run-complete-enter absolute inset-0 z-2100 flex items-center justify-center bg-black/35 px-6 backdrop-blur-sm">
             <div className="w-full max-w-sm rounded-[28px] border border-brand/30 bg-[#111214]/95 p-7 text-center shadow-2xl">
               <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-brand text-3xl font-bold text-black">✓</div>
               <p className="mt-5 text-sm font-semibold uppercase tracking-[0.2em] text-brand">Run complete</p>
@@ -305,7 +320,7 @@ export default function Home() {
           </div>
         )}
 
-        <div className="pointer-events-none absolute inset-x-4 bottom-5 z-[2000] mx-auto max-w-lg space-y-3">
+        <div className="pointer-events-none absolute inset-x-4 bottom-5 z-2000 mx-auto max-w-lg space-y-3">
           <div className={`${isFinishing ? "run-panel-exit" : "run-panel-enter"} rounded-[28px] border border-white/10 bg-[#111214]/95 px-5 py-5 shadow-2xl backdrop-blur-md`}>
             <div className="mb-4 text-center">
               <p className="text-sm font-semibold text-white/60">{isRunning ? "RUNNING" : "WAITING AT START LINE"}</p>
@@ -341,23 +356,24 @@ export default function Home() {
 
   return (
     <div className="flex flex-col min-h-screen font-sans">
-      <header className="relative z-50 w-full p-6 md:px-12 flex justify-between items-center border-b border-border bg-black/95 backdrop-blur-md sticky top-0 isolate">
-        <div className="flex items-center gap-2">
-          <Image src="/alcalarun.png" alt="Alcala Run logo" width={42} height={42} className="h-10 w-10 object-contain" priority />
-          <h1 className="text-2xl font-bold tracking-tighter text-white">ALCALA<span className="text-brand">RUN</span></h1>
+      <header className="z-50 flex w-full items-center justify-between gap-3 border-b border-border bg-black/95 px-4 py-4 backdrop-blur-md sticky top-0 isolate sm:px-6 md:px-12">
+        <div className="flex min-w-0 shrink items-center gap-2">
+          <Image src="/alcalarun.png" alt="Alcala Run logo" width={42} height={42} className="h-9 w-9 shrink-0 object-contain sm:h-10 sm:w-10" priority />
+          <h1 className="truncate text-xl font-bold tracking-tighter text-white sm:text-2xl">ALCALA<span className="text-brand">RUN</span></h1>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex shrink-0 items-center gap-2 sm:gap-4">
           {user ? (
             <>
-              <Link href="#leaderboards" className="text-sm font-medium text-white hover:text-brand transition-colors bg-white/10 px-4 py-2 rounded-lg">
+              <Link href="#leaderboards" className="max-w-[90px] truncate rounded-lg bg-white/10 px-3 py-2 text-xs font-medium text-white transition-colors hover:text-brand sm:max-w-none sm:px-4 sm:text-sm">
                 Hi, {user.displayName?.split(" ")[0] || "Runner"}
               </Link>
-              <button onClick={() => signOut(auth)} className="text-sm font-medium text-zinc-400 hover:text-white transition-colors">
-                Log out
+              <button onClick={() => signOut(auth)} className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-white/10 hover:text-white sm:h-auto sm:w-auto sm:px-0" aria-label="Log out" title="Log out">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="sm:hidden"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>
+                <span className="hidden text-sm font-medium sm:inline">Log out</span>
               </button>
             </>
           ) : (
-            <Link href="/login" className="text-sm font-medium text-white hover:text-brand transition-colors bg-white/10 px-4 py-2 rounded-lg">
+            <Link href="/login" className="rounded-lg bg-white/10 px-3 py-2 text-xs font-medium text-white transition-colors hover:text-brand sm:px-4 sm:text-sm">
               Login
             </Link>
           )}
@@ -365,7 +381,7 @@ export default function Home() {
       </header>
 
       {authReady && !user && (
-        <div className="sticky top-[81px] z-40 w-full bg-brand px-6 py-3 text-center text-sm font-semibold text-black">
+        <div className="sticky top-20.25 z-40 w-full bg-brand px-6 py-3 text-center text-sm font-semibold text-black">
           <Link href="/login" className="underline underline-offset-4">Log in</Link> to appear on the category leaderboards.
         </div>
       )}
@@ -374,7 +390,7 @@ export default function Home() {
         
         <div className="text-center mb-16 space-y-4">
           <h2 className="text-5xl md:text-7xl font-extrabold tracking-tight">
-            HAPPY <br/><span className="text-transparent bg-clip-text bg-gradient-to-r from-brand to-[#7ab81d]">RUNNNIG ALCALEÑOS</span>
+            HAPPY <br/><span className="break-words text-transparent bg-clip-text bg-linear-to-r from-brand to-[#7ab81d]">RUNNNIG {runnerName.toUpperCase()}</span>
           </h2>
           <p className="text-lg text-zinc-400 max-w-xl mx-auto">
             Choose a distance, follow the route, and track your real-time pace as you run.
@@ -452,7 +468,7 @@ export default function Home() {
                   </div>
                 )}
 
-                <button onClick={isRunning ? finishRun : startRun} className={`w-full py-4 font-bold rounded-xl transition-colors flex items-center justify-center gap-2 ${isRunning ? "bg-red-500 text-white hover:bg-red-600" : "bg-white text-black hover:bg-zinc-200"}`}>
+                <button onClick={isRunning ? finishRun : handleStartRun} className={`w-full py-4 font-bold rounded-xl transition-colors flex items-center justify-center gap-2 ${isRunning ? "bg-red-500 text-white hover:bg-red-600" : "bg-white text-black hover:bg-zinc-200"}`}>
                   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
                   {isRunning ? "FINISH RUN" : elapsedSeconds > 0 ? "START AGAIN" : "START RUN"}
                 </button>
@@ -512,6 +528,40 @@ export default function Home() {
         </section>
 
       </main>
+
+      {showGuestNameModal && (
+        <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/75 px-6 backdrop-blur-sm">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              const name = guestName.trim();
+              if (!name) return;
+              setShowGuestNameModal(false);
+              startRun(name);
+            }}
+            className="w-full max-w-md rounded-3xl border border-border bg-card p-7 shadow-2xl"
+          >
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-brand">Guest runner</p>
+            <h2 className="mt-3 text-3xl font-bold text-white">What should we call you?</h2>
+            <p className="mt-2 text-sm leading-relaxed text-zinc-400">Your name will appear on the finish results and leaderboard.</p>
+            <label htmlFor="guest-name" className="mt-6 block text-sm font-semibold text-white">Display name</label>
+            <input
+              id="guest-name"
+              value={guestName}
+              onChange={(event) => setGuestName(event.target.value)}
+              maxLength={40}
+              autoFocus
+              required
+              className="mt-2 w-full rounded-xl border border-border bg-black/50 px-4 py-3 text-white outline-none transition focus:border-brand"
+              placeholder="Enter your name"
+            />
+            <div className="mt-6 flex gap-3">
+              <button type="button" onClick={() => setShowGuestNameModal(false)} className="flex-1 rounded-xl border border-border px-4 py-3 font-semibold text-zinc-300 transition hover:bg-white/5">Cancel</button>
+              <button type="submit" className="flex-1 rounded-xl bg-brand px-4 py-3 font-bold text-black transition hover:bg-brand-hover">Start run</button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }
