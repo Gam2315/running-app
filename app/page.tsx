@@ -8,6 +8,7 @@ import { onAuthStateChanged, signOut, type User } from "firebase/auth";
 import { addDoc, collection, getDocs, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 import type { Waypoint } from "@/components/AdminMap";
+import VersionIndicator from "@/components/VersionIndicator";
 import { formatDistance, haversineDistance } from "@/lib/geo";
 
 const UserMap = dynamic(() => import("@/components/UserMap"), { 
@@ -533,6 +534,9 @@ export default function Home() {
         <div className="flex justify-center gap-5">
           <Link href="/terms" className="transition-colors hover:text-white">Terms of Service</Link>
           <Link href="/privacy" className="transition-colors hover:text-white">Privacy Policy</Link>
+        </div>
+        <div className="mt-4 flex justify-center">
+          <VersionIndicator />
         </div>
       </footer>
 
