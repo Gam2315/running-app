@@ -45,6 +45,9 @@ export default function AdminPage() {
   const [routes, setRoutes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [routeToDelete, setRouteToDelete] = useState<{ id: string; name: string } | null>(null);
+  const [deleteError, setDeleteError] = useState("");
   const [savedMsg, setSavedMsg] = useState("");
   const [leaderboardEntries, setLeaderboardEntries] = useState<LeaderboardEntry[]>([]);
   const [leaderboardLoading, setLeaderboardLoading] = useState(true);
@@ -161,11 +164,17 @@ export default function AdminPage() {
   };
 
   const handleDelete = async (id: string) => {
+    setDeletingId(id);
+    setDeleteError("");
     try {
       await deleteDoc(doc(db, "routes", id));
-      fetchRoutes();
+      await fetchRoutes();
     } catch (e) {
       console.error("Error deleting document: ", e);
+      setDeleteError("Unable to delete the route. Please try again.");
+    } finally {
+      setDeletingId(null);
+      setRouteToDelete(null);
     }
   };
 
@@ -249,6 +258,7 @@ export default function AdminPage() {
         {/* Current Routes */}
         <div>
           <h2 className="text-2xl font-semibold mb-6">Current Routes</h2>
+          {deleteError && <p className="mb-4 text-sm text-red-400">{deleteError}</p>}
           {loading ? (
             <p className="text-zinc-500">Loading...</p>
           ) : routes.length === 0 ? (
@@ -268,12 +278,12 @@ export default function AdminPage() {
                       <span className="text-zinc-400">
                         {route.waypoints.length} waypoints · {route.calculatedDistanceLabel || "—"}
                       </span>
-                      <button 
+                      <button
                         onClick={() => {
                           setWaypoints(route.waypoints);
                           setDetailedPath(route.detailedPath || []);
                           setRouteDistance(route.calculatedDistanceKm || 0);
-                          window.scrollTo({ top: 0, behavior: 'smooth' });
+                          window.scrollTo({ top: 0, behavior: "smooth" });
                         }}
                         className="text-brand hover:underline"
                       >
@@ -283,13 +293,15 @@ export default function AdminPage() {
                   ) : (
                     <span className="text-xs text-red-400">No waypoints configured</span>
                   )}
-                  
-                  <button 
-                    onClick={() => handleDelete(route.id)}
-                    className="absolute top-4 right-4 text-zinc-600 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
+
+                  <button
+                    onClick={() => setRouteToDelete({ id: route.id, name: route.name || route.distance })}
+                    disabled={deletingId !== null}
+                    aria-label={`Delete ${route.name || route.distance} route`}
+                    className="absolute top-4 right-4 text-zinc-500 hover:text-red-500 transition-colors disabled:cursor-wait disabled:opacity-40"
                     title="Delete Route"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
+                    {deletingId === route.id ? "Deleting..." : "Delete"}
                   </button>
                 </div>
               ))}
@@ -346,6 +358,52 @@ export default function AdminPage() {
           )}
         </section>
       </div>
+
+      {routeToDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setRouteToDelete(null);
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-route-title"
+          >
+            <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-full bg-red-500/10 text-red-400">
+              <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 6h18" />
+                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+              </svg>
+            </div>
+            <h2 id="delete-route-title" className="text-xl font-semibold text-white">Delete route?</h2>
+            <p className="mt-2 text-sm leading-6 text-zinc-400">
+              This will permanently remove <span className="font-semibold text-zinc-200">{routeToDelete.name}</span>.
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setRouteToDelete(null)}
+                className="rounded-lg border border-border px-4 py-2.5 text-sm font-semibold text-zinc-300 transition-colors hover:border-zinc-500 hover:text-white"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDelete(routeToDelete.id)}
+                className="rounded-lg bg-red-500 px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-red-400 disabled:cursor-wait disabled:opacity-50"
+                disabled={deletingId !== null}
+              >
+                {deletingId === routeToDelete.id ? "Deleting..." : "Delete route"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
